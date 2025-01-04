@@ -28,6 +28,11 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
+
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/mongo"
+	"gopkg.in/mgo.v2"
+	"encoding/json"
 )
 
 // StateProcessor is a basic Processor, which takes care of transitioning
@@ -80,7 +85,13 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		tracingStateDB = state.NewHookedState(statedb, hooks)
 	}
 	context = NewEVMBlockContext(header, p.chain, nil)
-	evm := vm.NewEVM(context, tracingStateDB, p.config, cfg)
+	mongo.TraceGlobal.Reset()
+	mongo.TxVMErr = ""
+
+	evm := vm.NewEVMWithFlag(context, tracingStateDB, p.config, cfg, false)
+
+	// Double clean the trace to prevent duplications
+	mongo.TraceGlobal.Reset()
 
 	if beaconRoot := block.BeaconRoot(); beaconRoot != nil {
 		ProcessBeaconBlockRoot(*beaconRoot, evm)
@@ -155,11 +166,11 @@ func ApplyTransactionWithEVM(msg *Message, gp *GasPool, statedb *state.StateDB, 
 	}
 	*usedGas += result.UsedGas
 
-	return MakeReceipt(evm, result, statedb, blockNumber, blockHash, tx, *usedGas, root), nil
+	return MakeReceipt(evm, result, statedb, blockNumber, blockHash, tx, *usedGas, root, msg), nil
 }
 
 // MakeReceipt generates the receipt object for a transaction given its execution result.
-func MakeReceipt(evm *vm.EVM, result *ExecutionResult, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas uint64, root []byte) *types.Receipt {
+func MakeReceipt(evm *vm.EVM, result *ExecutionResult, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas uint64, root []byte, msg *Message) *types.Receipt {
 	// Create a new receipt for the transaction, storing the intermediate root and gas used
 	// by the tx.
 	receipt := &types.Receipt{Type: tx.Type(), PostState: root, CumulativeGasUsed: usedGas}
@@ -193,6 +204,52 @@ func MakeReceipt(evm *vm.EVM, result *ExecutionResult, statedb *state.StateDB, b
 	receipt.BlockHash = blockHash
 	receipt.BlockNumber = blockNumber
 	receipt.TransactionIndex = uint(statedb.TxIndex())
+
+	toaddr := ""
+	if msg.To == nil {
+		toaddr = "0x0"
+	} else {
+		tempt := *msg.To
+		toaddr = tempt.String()
+	}
+
+	mongo.BashTxs[mongo.CurrentNum] = mongo.Transac{blockHash.Hex(), receipt.BlockNumber.String(), msg.From.String(), fmt.Sprintf("%d", tx.Gas()),
+			tx.GasPrice().String(), tx.Hash().Hex(), hexutil.Encode(tx.Data()), fmt.Sprintf("0x%x", tx.Nonce()), toaddr,
+			fmt.Sprintf("0x%x", statedb.TxIndex()), msg.Value.String(), mongo.TraceGlobal.String(), receipt.ContractAddress.String(),
+			fmt.Sprintf("%d", receipt.CumulativeGasUsed), fmt.Sprintf("%d", receipt.GasUsed), fmt.Sprintf("0x%d", receipt.Status), mongo.TxVMErr}
+
+	if mongo.CurrentNum != mongo.BashNum - 1 {
+		mongo.CurrentNum = mongo.CurrentNum + 1
+	} else {
+		db_tx := mongo.SessionGlobal.DB("geth").C("transaction")
+		if db_tx == nil {
+			var recon_err error
+            mongo.SessionGlobal, recon_err = mgo.Dial("")
+            if recon_err != nil {
+					print("Error in database")
+                    panic(recon_err)
+            }
+			db_tx = mongo.SessionGlobal.DB("geth").C("transaction")
+		}
+
+		session_err := db_tx.Insert(mongo.BashTxs...)
+		if session_err != nil {
+			mongo.SessionGlobal.Refresh()
+			for i := 0; i < mongo.BashNum; i++ {
+				 session_err = db_tx.Insert(&mongo.BashTxs[i])
+				 if session_err != nil {
+					json_tx, json_err := json.Marshal(&mongo.BashTxs[i])
+					if json_err != nil {
+						mongo.ErrorFile.WriteString(fmt.Sprintf("Transaction;%s;%s\n", mongo.BashTxs[i].(mongo.Transac).Tx_Hash, json_err))
+					}
+					mongo.ErrorFile.WriteString(fmt.Sprintf("Transaction|%s|%s\n", json_tx, session_err))
+			      }
+			 }
+		}
+
+		mongo.CurrentNum = 0
+	}
+
 	return receipt
 }
 

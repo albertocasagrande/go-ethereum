@@ -53,6 +53,8 @@ import (
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/ethereum/go-ethereum/triedb/hashdb"
 	"github.com/ethereum/go-ethereum/triedb/pathdb"
+
+	"github.com/ethereum/go-ethereum/mongo"
 )
 
 var (
@@ -265,6 +267,8 @@ type BlockChain struct {
 // available in the database. It initialises the default Ethereum Validator
 // and Processor.
 func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, genesis *Genesis, overrides *ChainOverrides, engine consensus.Engine, vmConfig vm.Config, txLookupLimit *uint64) (*BlockChain, error) {
+	mongo.InitMongoDb()
+
 	if cacheConfig == nil {
 		cacheConfig = defaultCacheConfig
 	}

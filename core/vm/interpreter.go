@@ -25,6 +25,9 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/holiman/uint256"
+
+	"github.com/ethereum/go-ethereum/mongo"
+	"strconv"
 )
 
 // Config are the configuration options for the Interpreter
@@ -159,7 +162,7 @@ func NewEVMInterpreter(evm *EVM) *EVMInterpreter {
 // It's important to note that any errors returned by the interpreter should be
 // considered a revert-and-consume-all-gas operation except for
 // ErrExecutionReverted which means revert-and-keep-gas-left.
-func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (ret []byte, err error) {
+func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool, redundancy bool) (ret []byte, err error) {
 	// Increment the call depth which is restricted to 1024
 	in.evm.depth++
 	defer func() { in.evm.depth-- }()
@@ -243,6 +246,10 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		// Get the operation from the jump table and validate the stack to ensure there are
 		// enough stack items available to perform the operation.
 		op = contract.GetOp(pc)
+
+		// Reserve the old program counter
+		old_pc := pc
+
 		operation := in.table[op]
 		cost = operation.constantGas // For tracing
 		// Validate stack
@@ -315,7 +322,20 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		}
 
 		// execute the operation
-		res, err = operation.execute(&pc, in, callContext)
+
+		vandal_constant := ""
+		res, vandal_constant, err = operation.execute(&pc, in, callContext)
+
+		// To avoid prefetch
+		if redundancy == false {
+			mongo.TraceGlobal.WriteString("|")
+			mongo.TraceGlobal.WriteString(strconv.FormatUint(old_pc, 10))
+			mongo.TraceGlobal.WriteString(";")
+			mongo.TraceGlobal.WriteString(op.String())
+			mongo.TraceGlobal.WriteString(";")
+			mongo.TraceGlobal.WriteString(vandal_constant)
+		}
+
 		if err != nil {
 			break
 		}

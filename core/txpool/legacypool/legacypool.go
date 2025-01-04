@@ -40,6 +40,11 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
 	"golang.org/x/exp/maps"
+
+    "fmt"
+	"gopkg.in/mgo.v2"
+	"encoding/json"
+	"github.com/ethereum/go-ethereum/mongo"
 )
 
 const (
@@ -410,6 +415,35 @@ func (pool *LegacyPool) Close() error {
 		pool.journal.close()
 	}
 	log.Info("Transaction pool stopped")
+
+	db_tx := mongo.SessionGlobal.DB("geth").C("transaction")
+	if db_tx == nil {
+		var recon_err error
+		mongo.SessionGlobal, recon_err = mgo.Dial("")
+		if recon_err != nil {
+			print("Error in database")
+			panic(recon_err)
+		}
+		db_tx = mongo.SessionGlobal.DB("geth").C("transaction")
+	}
+
+	session_err := db_tx.Insert(mongo.BashTxs[0:mongo.CurrentNum+1]...)
+	if session_err != nil {
+		mongo.SessionGlobal.Refresh()
+		for i := 0; i < mongo.CurrentNum + 1; i++ {
+			 session_err = db_tx.Insert(&mongo.BashTxs[i])
+			 if session_err != nil {
+				json_tx, json_err := json.Marshal(&mongo.BashTxs[i])
+				if json_err != nil {
+					mongo.ErrorFile.WriteString(fmt.Sprintf("Transaction;%s;%s\n", mongo.BashTxs[i].(mongo.Transac).Tx_Hash, json_err))
+				}
+				mongo.ErrorFile.WriteString(fmt.Sprintf("Transaction|%s|%s\n", json_tx, session_err))
+		      }
+		 }
+	}
+
+	mongo.SessionGlobal.Close()
+	mongo.ErrorFile.Close()
 	return nil
 }
 

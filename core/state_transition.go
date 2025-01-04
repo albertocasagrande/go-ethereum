@@ -28,6 +28,8 @@ import (
 	"github.com/ethereum/go-ethereum/crypto/kzg4844"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
+
+	"github.com/ethereum/go-ethereum/mongo"
 )
 
 // ExecutionResult includes all output after executing given evm
@@ -485,6 +487,10 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 
 		// Execute the transaction's call.
 		ret, st.gasRemaining, vmerr = st.evm.Call(sender, st.to(), msg.Data, st.gasRemaining, value)
+	}
+
+	if vmerr != nil {
+		mongo.TxVMErr = vmerr.Error()
 	}
 
 	var gasRefund uint64
